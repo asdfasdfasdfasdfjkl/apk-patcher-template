@@ -1,0 +1,254 @@
+# .github/workflows/patch-apk.yml
+name: Patch Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Build ID'
+        required: true
+      app_name:
+        description: 'App Name'
+        required: true
+      version_code:
+        description: 'Version Code'
+        required: true
+      version_name:
+        description: 'Version Name'
+        required: true
+      contact_email:
+        description: 'Contact Email'
+        required: false
+      build_type:
+        description: 'Build Type (release/debug)'
+        required: true
+        default: 'release'
+
+jobs:
+  patch-apk:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool zipalign apksigner
+          npm install sharp
+      
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+      
+      - name: Read build configuration
+        id: config
+        run: |
+          echo "::set-output name=app_name::$(node -p "require('./build-config.json').app_name")"
+          echo "::set-output name=build_id::$(node -p "require('./build-config.json').build_id")"
+          echo "::set-output name=version_code::$(node -p "require('./build-config.json').version_code")"
+          echo "::set-output name=version_name::$(node -p "require('./build-config.json').version_name")"
+      
+      - name: Patch APK
+        run: |
+          # Download base APK (you'll need to store this somewhere accessible)
+          # For now, we assume it's in the repository or download from S3
+          if [ -f "base.apk" ]; then
+            cp base.apk input.apk
+          else
+            # Download from S3 or other storage
+            aws s3 cp s3://${{ secrets.AWS_S3_BUCKET }}/base.apk input.apk
+          fi
+          
+          # Create Node.js script for patching
+          cat > patch.js << 'EOF'
+          const { execSync } = require('child_process');
+          const fs = require('fs');
+          const sharp = require('sharp');
+
+          const BUILD_ID = '${{ steps.config.outputs.build_id }}';
+          const APP_NAME = '${{ steps.config.outputs.app_name }}';
+          const VERSION_CODE = '${{ steps.config.outputs.version_code }}';
+          const VERSION_NAME = '${{ steps.config.outputs.version_name }}';
+          const ICON_PATH = 'app_icon.webp';
+          const KEYSTORE = 'keystore.jks';
+          const ALIAS = '${{ secrets.KEYSTORE_ALIAS }}';
+          const PASS = '${{ secrets.KEYSTORE_PASSWORD }}';
+
+          const ICON_SIZES = {
+            'mipmap-xxxhdpi': 192,
+            'mipmap-xxhdpi': 144,
+            'mipmap-xhdpi': 96,
+            'mipmap-hdpi': 72,
+            'mipmap-mdpi': 48,
+            'mipmap': 48,
+            'mipmap-ldpi': 36,
+          };
+
+          function run(cmd) {
+            console.log('> ' + cmd);
+            execSync(cmd, { stdio: 'inherit' });
+          }
+
+          // 1. Decode APK
+          run('apktool d input.apk -f -o decoded');
+
+          // 2. Patch BUILD_ID in smali files
+          function findFiles(dir, keyword) {
+            let results = [];
+            fs.readdirSync(dir).forEach(file => {
+              const full = dir + '/' + file;
+              if (fs.statSync(full).isDirectory()) {
+                results = results.concat(findFiles(full, keyword));
+              } else if (file.includes(keyword) && file.endsWith('.smali')) {
+                results.push(full);
+              }
+            });
+            return results;
+          }
+
+          const smaliFiles = findFiles('decoded', 'BuildConfig');
+          smaliFiles.forEach(file => {
+            let data = fs.readFileSync(file, 'utf8');
+            data = data.replace(
+              /const-string v0, "\\d+"\\s+sput-object v0, Lcom\\/qavola\\/universalwebview\\/BuildConfig;->BUILD_ID:Ljava\\/lang\\/String;/,
+              `const-string v0, "${BUILD_ID}"\\n    sput-object v0, Lcom/qavola/universalwebview/BuildConfig;->BUILD_ID:Ljava/lang/String;`
+            );
+            fs.writeFileSync(file, data);
+          });
+
+          // 3. Change App Name
+          const stringsPath = 'decoded/res/values/strings.xml';
+          if (fs.existsSync(stringsPath)) {
+            let strings = fs.readFileSync(stringsPath, 'utf8');
+            strings = strings.replace(
+              /<string name="app_name">.*?<\\/string>/,
+              `<string name="app_name">${APP_NAME}</string>`
+            );
+            fs.writeFileSync(stringsPath, strings);
+          }
+
+          // 4. Replace Version in AndroidManifest.xml
+          const manifestPath = 'decoded/AndroidManifest.xml';
+          if (fs.existsSync(manifestPath)) {
+            let manifest = fs.readFileSync(manifestPath, 'utf8');
+            manifest = manifest.replace(
+              /android:versionCode="\\d+"/,
+              `android:versionCode="${VERSION_CODE}"`
+            );
+            manifest = manifest.replace(
+              /android:versionName="[^"]+"/,
+              `android:versionName="${VERSION_NAME}"`
+            );
+            fs.writeFileSync(manifestPath, manifest);
+          }
+
+          // 5. Replace Icons
+          async function replaceIcons() {
+            if (!fs.existsSync(ICON_PATH)) {
+              console.log('No icon file found, skipping icon replacement');
+              return;
+            }
+
+            const folders = fs.readdirSync('decoded/res').filter(f => 
+              f.startsWith('mipmap') || f.startsWith('drawable')
+            );
+
+            folders.forEach(folder => {
+              const folderPath = `decoded/res/${folder}`;
+              if (!fs.existsSync(folderPath)) return;
+              
+              let targetSize = ICON_SIZES[folder] || 48;
+              const files = fs.readdirSync(folderPath);
+              
+              files.forEach(file => {
+                if ((file.includes('ic_launcher') || file.includes('icon')) && 
+                    (file.endsWith('.png') || file.endsWith('.webp'))) {
+                  
+                  const fullPath = `${folderPath}/${file}`;
+                  console.log(`Replacing: ${folder}/${file} (${targetSize}x${targetSize}px)`);
+                  
+                  sharp(ICON_PATH)
+                    .resize(targetSize, targetSize, {
+                      fit: 'contain',
+                      background: { r: 0, g: 0, b: 0, alpha: 0 }
+                    })
+                    .png()
+                    .toFile(fullPath + '.tmp')
+                    .then(() => {
+                      fs.renameSync(fullPath + '.tmp', fullPath);
+                    });
+                }
+              });
+            });
+          }
+
+          replaceIcons().catch(console.error);
+
+          // 6. Rebuild APK
+          run('apktool b decoded -o unsigned.apk');
+
+          // 7. Zipalign
+          run('zipalign -v 4 unsigned.apk aligned.apk');
+
+          // 8. Sign
+          run(`apksigner sign --ks ${KEYSTORE} --ks-key-alias ${ALIAS} --ks-pass pass:${PASS} aligned.apk`);
+
+          // 9. Rename output
+          fs.renameSync('aligned.apk', `patched-${APP_NAME}-${VERSION_NAME}.apk`);
+
+          console.log('\\n✅ APK Patched & Signed Successfully');
+          EOF
+          
+          node patch.js
+      
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          OUTPUT_APK=$(ls patched-*.apk)
+          aws s3 cp $OUTPUT_APK s3://${{ secrets.AWS_S3_BUCKET }}/builds/${{ steps.config.outputs.build_id }}.apk
+          aws s3 cp $OUTPUT_APK s3://${{ secrets.AWS_S3_BUCKET }}/builds/${{ steps.config.outputs.build_id }}-info.json
+          
+          # Create download info
+          echo '{
+            "buildId": "${{ steps.config.outputs.build_id }}",
+            "appName": "${{ steps.config.outputs.app_name }}",
+            "versionCode": "${{ steps.config.outputs.version_code }}",
+            "versionName": "${{ steps.config.outputs.version_name }}",
+            "downloadUrl": "https://${{ secrets.AWS_S3_BUCKET }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com/builds/${{ steps.config.outputs.build_id }}.apk",
+            "fileSize": "'$(stat -c%s $OUTPUT_APK)'",
+            "timestamp": "'$(date -Iseconds)'"
+          }' > build-info.json
+          
+          aws s3 cp build-info.json s3://${{ secrets.AWS_S3_BUCKET }}/builds/${{ steps.config.outputs.build_id }}-info.json
+      
+      - name: Update build status
+        run: |
+          echo "BUILD_COMPLETE=true" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://${{ secrets.AWS_S3_BUCKET }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com/builds/${{ steps.config.outputs.build_id }}.apk" >> $GITHUB_ENV
+      
+      - name: Create status file
+        run: |
+          echo '{
+            "status": "completed",
+            "conclusion": "success",
+            "downloadUrl": "${{ env.DOWNLOAD_URL }}",
+            "buildId": "${{ steps.config.outputs.build_id }}",
+            "appName": "${{ steps.config.outputs.app_name }}",
+            "version": "${{ steps.config.outputs.version_name }}"
+          }' > build-status.json
+          
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add build-status.json
+          git commit -m "Update build status for ${{ steps.config.outputs.build_id }}" || true
+          git push
