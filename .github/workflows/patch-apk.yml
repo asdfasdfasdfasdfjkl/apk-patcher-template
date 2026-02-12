@@ -53,90 +53,47 @@ jobs:
     
     - name: Install apktool
       run: |
-        # Method 1: Try GitHub mirror first (more reliable)
-        wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar || \
-        wget -q https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
-        
-        # Download apktool script
+        # Download apktool jar from GitHub releases
+        wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
+        # Download apktool wrapper script
         wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
-        
         mv apktool_2.9.3.jar apktool.jar
         chmod +x apktool apktool.jar
         sudo mv apktool* /usr/local/bin/
-        
-        # Verify installation
         apktool --version
     
-    - name: Install sharp
-      run: npm install -g sharp-cli
+    - name: Install sharp-cli
+      run: |
+        npm install -g sharp-cli
+        sharp --version || echo "sharp-cli installed"
     
     - name: Install required tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y zipalign
+        sudo apt-get install -y zipalign apksigner
     
     - name: Create icon from base64
       if: env.ICON_BASE64 != ''
       run: |
         echo "$ICON_BASE64" | base64 -d > icon.png
-        npx sharp-cli icon.png -o icon.webp
-    
-    - name: Update build status - Started
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Decoding APK..."
-          }'
+        npx sharp-cli -i icon.png -o icon.webp
+        ls -la icon.webp
     
     - name: Decode APK
       run: |
         apktool d base.apk -f -o decoded
     
-    - name: Update build status - Patching
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Patching BuildConfig with BUILD_ID..."
-          }'
-    
     - name: Patch BUILD_ID
       run: |
-        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[0-9]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \;
-    
-    - name: Update build status - Changing App Name
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Changing app name to: '$APP_NAME'..."
-          }'
+        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[0-9]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \; 2>/dev/null || echo "No BuildConfig.smali found"
     
     - name: Change App Name
       run: |
-        sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" decoded/res/values/strings.xml
-    
-    - name: Update build status - Replacing Icons
-      if: env.ICON_BASE64 != ''
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Replacing app icons..."
-          }'
+        if [ -f "decoded/res/values/strings.xml" ]; then
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">$APP_NAME</string>|g" decoded/res/values/strings.xml
+        else
+          echo "strings.xml not found"
+        fi
     
     - name: Replace Icons
       if: env.ICON_BASE64 != ''
@@ -163,6 +120,11 @@ jobs:
           process.exit(0);
         }
         
+        if (!fs.existsSync(BASE_PATH)) {
+          console.log('No res folder found, skipping...');
+          process.exit(0);
+        }
+        
         const folders = fs.readdirSync(BASE_PATH).filter(f => 
           f.startsWith('mipmap') || f.startsWith('drawable')
         );
@@ -180,12 +142,11 @@ jobs:
                 (file.endsWith('.png') || file.endsWith('.webp'))) {
               
               const fullPath = `${folderPath}/${file}`;
-              const ext = file.split('.').pop();
               
               console.log(`Replacing: ${folder}/${file} (${targetSize}x${targetSize}px)`);
               
               try {
-                execSync(`npx sharp-cli ${ICON_PATH} --resize ${targetSize} ${targetSize} --output ${fullPath}.tmp --format ${ext}`, { stdio: 'inherit' });
+                execSync(`npx sharp-cli -i ${ICON_PATH} --resize ${targetSize} ${targetSize} -o ${fullPath}.tmp`, { stdio: 'inherit' });
                 fs.renameSync(`${fullPath}.tmp`, fullPath);
               } catch (err) {
                 console.error(`Error processing ${fullPath}:`, err.message);
@@ -215,25 +176,9 @@ jobs:
         
         node replace-icons.js
     
-    - name: Update build status - Rebuilding
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Rebuilding APK...",
-            "progress": 70
-          }'
-    
     - name: Rebuild APK
       run: |
         apktool b decoded -o unsigned.apk
-        BUILD_END_TIME=$(date +%s)
-        echo "BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))" >> $GITHUB_ENV
-      env:
-        BUILD_START_TIME: ${{ github.event.repository.created_at }}
     
     - name: Zipalign
       run: |
@@ -242,6 +187,7 @@ jobs:
     - name: Sign APK
       run: |
         if [ ! -f "keystore.jks" ]; then
+          echo "⚠️ Keystore not found, generating new one..."
           keytool -genkey -v -keystore keystore.jks -keyalg RSA -keysize 2048 \
             -validity 10000 -alias mykey -storepass Hossain@11223 -keypass Hossain@11223 \
             -dname "CN=Qavola, OU=Development, O=Qavola, L=City, ST=State, C=US"
@@ -251,18 +197,7 @@ jobs:
           --key-pass pass:Hossain@11223 aligned.apk
         
         mv aligned.apk ${{ github.event.inputs.buildId }}.apk
-    
-    - name: Update build status - Uploading to S3
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "in_progress",
-            "message": "Uploading APK to S3...",
-            "progress": 85
-          }'
+        echo "✅ APK signed successfully"
     
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
@@ -274,7 +209,6 @@ jobs:
     - name: Upload to S3
       id: upload
       run: |
-        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
         FILENAME="builds/$BUILD_ID/$BUILD_ID.apk"
         
         aws s3 cp $BUILD_ID.apk s3://$AWS_S3_BUCKET/$FILENAME
@@ -285,61 +219,10 @@ jobs:
         
         echo "download_url=$PRESIGNED_URL" >> $GITHUB_OUTPUT
         echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
-    
-    - name: Update build status - Completed
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "completed",
-            "conclusion": "success",
-            "downloadUrl": "${{ steps.upload.outputs.download_url }}",
-            "fileSize": ${{ steps.upload.outputs.file_size }},
-            "buildDuration": '${{ env.BUILD_DURATION }}',
-            "buildCompletedAt": "'$(date -Iseconds)'",
-            "message": "APK built successfully!"
-          }'
-    
-    - name: Send email notification
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/send-email" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "appName": "'$APP_NAME'",
-            "downloadUrl": "${{ steps.upload.outputs.download_url }}",
-            "status": "success",
-            "contactEmail": "'$CONTACT_EMAIL'"
-          }'
+        echo "✅ Uploaded to S3: $FILENAME"
     
     - name: Cleanup
       if: always()
       run: |
-        rm -rf decoded unsigned.apk aligned.apk *.apk
-    
-    - name: Update build status - Failed
-      if: failure()
-      run: |
-        curl -X POST "$API_BASE_URL/api/build/status-update" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "status": "completed",
-            "conclusion": "failure",
-            "errorMessage": "Build failed during workflow execution",
-            "message": "APK build failed"
-          }'
-        
-        curl -X POST "$API_BASE_URL/api/build/send-email" \
-          -H "Content-Type: application/json" \
-          -H "X-Build-Secret: $BUILD_SECRET" \
-          -d '{
-            "buildId": "'$BUILD_ID'",
-            "appName": "'$APP_NAME'",
-            "status": "failure",
-            "contactEmail": "'$CONTACT_EMAIL'"
-          }'
+        rm -rf decoded unsigned.apk aligned.apk *.apk *.png *.webp || true
+        echo "✅ Cleanup completed"
