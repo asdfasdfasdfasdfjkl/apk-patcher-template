@@ -53,11 +53,19 @@ jobs:
     
     - name: Install apktool
       run: |
-        wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+        # Method 1: Try GitHub mirror first (more reliable)
+        wget -q https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar || \
         wget -q https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
+        
+        # Download apktool script
+        wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+        
         mv apktool_2.9.3.jar apktool.jar
         chmod +x apktool apktool.jar
         sudo mv apktool* /usr/local/bin/
+        
+        # Verify installation
+        apktool --version
     
     - name: Install sharp
       run: npm install -g sharp-cli
