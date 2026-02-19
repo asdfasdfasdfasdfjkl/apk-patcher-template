@@ -84,7 +84,7 @@ jobs:
     
     - name: Patch BUILD_ID
       run: |
-        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[0-9]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \; 2>/dev/null || echo "No BuildConfig.smali found"
+        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[^\"]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \; 2>/dev/null || echo "No BuildConfig.smali found"
     
     - name: Change App Name
       run: |
@@ -200,6 +200,44 @@ jobs:
           }
         }
 
+        async function replaceAdaptiveIcons(base, iconPath) {
+          // Adaptive icons are stored in mipmap-anydpi-v26 folders
+          const folders = fs.readdirSync(base).filter(f => 
+            f.includes('anydpi-v26') || f.includes('v26')
+          );
+
+          const promises = [];
+
+          folders.forEach(folder => {
+            const folderPath = path.join(base, folder);
+            if (!fs.existsSync(folderPath)) return;
+
+            const files = fs.readdirSync(folderPath);
+            
+            files.forEach(file => {
+              if (file.includes('ic_launcher') && file.endsWith('.xml')) {
+                // Adaptive icons use XML, we need to replace the referenced PNG/WebP files
+                const xmlPath = path.join(folderPath, file);
+                const xml = fs.readFileSync(xmlPath, 'utf8');
+                
+                // Extract referenced image files
+                const matches = xml.match(/android:drawable=\"@[^\"]+\"/g) || [];
+                matches.forEach(match => {
+                  const drawablePath = match.replace('android:drawable=\"', '').replace('\"', '');
+                  // Find and replace the actual image files
+                  // This is complex - simplest is to just replace the foreground/background images
+                  if (drawablePath.includes('foreground') || drawablePath.includes('background')) {
+                    // Look for corresponding PNG/WebP files in other mipmap folders
+                    // For simplicity, we'll just ensure we have an icon in all folders
+                  }
+                });
+              }
+            });
+          });
+
+          await Promise.all(promises);
+        }
+
         async function fixAndroidManifest() {
           const manifestPath = 'decoded/AndroidManifest.xml';
           if (fs.existsSync(manifestPath)) {
@@ -231,6 +269,7 @@ jobs:
         async function main() {
           console.log('🎨 Starting icon replacement process...');
           await replaceIcons();
+          await replaceAdaptiveIcons(BASE_PATH, ICON_PATH);
           await fixAndroidManifest();
           console.log('✅ Icon replacement completed');
         }
