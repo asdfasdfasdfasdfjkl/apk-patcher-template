@@ -85,10 +85,9 @@ jobs:
     - name: Patch BUILD_ID
       run: |
         echo "Patching BUILD_ID with: $BUILD_ID"
-        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[^\"]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \; 2>/dev/null || echo "No BuildConfig.smali found"
-        
-        echo "--- VERIFICATION ---"
-        find decoded -name "BuildConfig.smali" -exec grep -H "BUILD_ID" {} \; || echo "BUILD_ID not found in any file"
+        find decoded -name "BuildConfig.smali" -exec sed -i "s/const-string v0, \"[^\"]*\"[[:space:]]*sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/const-string v0, \"$BUILD_ID\"\n    sput-object v0, Lcom\/qavola\/universalwebview\/BuildConfig;->BUILD_ID:Ljava\/lang\/String;/g" {} \; 2>/dev/null || echo "No BuildConfig.smali found"  
+        echo "--- FULL FILE CONTENT ---"
+        find decoded -name "BuildConfig.smali" -exec cat {} \; || echo "BuildConfig.smali not found"
 
     
     - name: Change App Name
