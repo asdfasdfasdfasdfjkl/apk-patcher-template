@@ -350,7 +350,7 @@ jobs:
         fi
         
         # Call the webhook with build information
-        curl -X GET "${{ secrets.API_BASE_URL }}/api/build-status?buildId=${{ github.event.inputs.buildId }}&github-action=true" \
+        curl -X GET "${{ secrets.API_BASE_URL }}/api/build/build-status?buildId=${{ github.event.inputs.buildId }}&github-action=true" \
           -H "Authorization: Bearer ${{ secrets.BUILD_SECRET }}" \
           -H "Content-Type: application/json" \
           --fail \
