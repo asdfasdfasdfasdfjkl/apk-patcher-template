@@ -349,15 +349,31 @@ jobs:
           CONCLUSION="failure"
         fi
         
-        # Call the webhook with build information
-        curl -X GET "${{ secrets.API_BASE_URL }}/api/build/build-status?buildId=${{ github.event.inputs.buildId }}&github-action=true" \
+        # Construct the full URL
+        WEBHOOK_URL="${{ secrets.API_BASE_URL }}/api/build/build-status?buildId=${{ github.event.inputs.buildId }}&github-action=true"
+        
+        echo "🔍 Making request to: $WEBHOOK_URL"
+        echo "🔍 Using API_BASE_URL: ${{ secrets.API_BASE_URL }}"
+        
+        # Call the webhook and capture full response
+        HTTP_CODE=$(curl -X GET "$WEBHOOK_URL" \
           -H "Authorization: Bearer ${{ secrets.BUILD_SECRET }}" \
           -H "Content-Type: application/json" \
           --fail \
           --silent \
           --show-error \
-          --output /dev/null \
-          -w "Webhook called with status: %{http_code}\n"
+          --write-out "%{http_code}" \
+          --output /tmp/webhook_response.txt)
+        
+        echo "📡 Response status code: $HTTP_CODE"
+        echo "📡 Response body:"
+        cat /tmp/webhook_response.txt
+        
+        if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 307 ]; then
+          echo "✅ Webhook successful with status: $HTTP_CODE"
+        else
+          echo "❌ Webhook failed with status: $HTTP_CODE"
+        fi
         
         echo "✅ Build status webhook sent: $CONCLUSION"
     
