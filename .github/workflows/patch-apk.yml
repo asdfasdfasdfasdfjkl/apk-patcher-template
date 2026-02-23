@@ -336,6 +336,30 @@ jobs:
         echo "download_url=$PRESIGNED_URL" >> $GITHUB_OUTPUT
         echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
         echo "✅ Uploaded to S3: $FILENAME"
+
+    - name: Call webhook to update build status
+      if: always()
+      run: |
+        # Determine status based on previous steps
+        if [ "${{ job.status }}" == "success" ]; then
+          STATUS="completed"
+          CONCLUSION="success"
+        else
+          STATUS="completed"
+          CONCLUSION="failure"
+        fi
+        
+        # Call the webhook with build information
+        curl -X GET "${{ secrets.API_BASE_URL }}/api/build-status?buildId=${{ github.event.inputs.buildId }}&github-action=true" \
+          -H "Authorization: Bearer ${{ secrets.BUILD_SECRET }}" \
+          -H "Content-Type: application/json" \
+          --fail \
+          --silent \
+          --show-error \
+          --output /dev/null \
+          -w "Webhook called with status: %{http_code}\n"
+        
+        echo "✅ Build status webhook sent: $CONCLUSION"
     
     - name: Cleanup
       if: always()
